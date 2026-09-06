@@ -25,6 +25,8 @@ This project implements several security measures:
 - Safe error handling
 - Database parameterization
 - No logging of sensitive data
+- Debug mode disabled by default (controlled via FLASK_DEBUG environment variable)
+- Host binding defaults to 127.0.0.1 (controlled via FLASK_HOST environment variable)
 
 ## Security Limitations
 
@@ -42,3 +44,10 @@ This project implements several security measures:
 - Add rate limiting
 - Use HTTPS in production
 - Regular security audits
+
+## Environment Variables
+
+- `FLASK_DEBUG`: Set to `true` only for development (default: `False`)
+- `FLASK_HOST`: Set to `0.0.0.0` for production with proper network controls (default: `127.0.0.1`)
+- `FLASK_PORT`: Port to bind to (default: `5000`)
+- `SECRET_KEY`: Flask secret key (required for production)
