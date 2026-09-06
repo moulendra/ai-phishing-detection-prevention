@@ -119,6 +119,34 @@ def analyze_email():
         logger.error(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analyze/content', methods=['POST'])
+def analyze_content():
+    try:
+        data = request.get_json()
+        content = data.get('content')
+        
+        if not content:
+            return jsonify({'error': 'Content is required'}), 400
+        
+        result = content_analyzer.analyze(content)
+        
+        detection = DetectionResult(
+            analysis_type='content',
+            input_data=content[:500],
+            is_phishing=result['is_phishing'],
+            confidence_score=result['confidence_score'],
+            risk_level='high' if result['confidence_score'] > 0.7 else 'medium' if result['confidence_score'] > 0.4 else 'low',
+            detection_method='rules',
+            details=str(result['details'])
+        )
+        db.session.add(detection)
+        db.session.commit()
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     try:
@@ -130,6 +158,25 @@ def get_stats():
             'phishing_count': phishing,
             'legitimate_count': total - phishing,
             'detection_rate': round((phishing / total * 100) if total > 0 else 0, 2)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reports', methods=['GET'])
+def get_reports():
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        results = DetectionResult.query.order_by(
+            DetectionResult.timestamp.desc()
+        ).limit(limit).offset(offset).all()
+        
+        reports = [result.to_dict() for result in results]
+        
+        return jsonify({
+            'reports': reports,
+            'total': DetectionResult.query.count()
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
