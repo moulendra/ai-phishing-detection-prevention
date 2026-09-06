@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Phishing Detection System</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; min-height: 100vh; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
+        h1 { text-align: center; color: #333; }
+        .input-group { margin: 20px 0; }
+        input, textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        button { background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+        .result { margin: 20px 0; padding: 15px; border-radius: 5px; display: none; }
+        .result.show { display: block; }
+        .result.safe { background: #d4edda; }
+        .result.danger { background: #f8d7da; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ AI Phishing Detection System</h1>
+        <div class="input-group">
+            <input type="url" id="urlInput" placeholder="Enter URL to analyze">
+        </div>
+        <button onclick="analyzeURL()">Analyze URL</button>
+        <div id="result" class="result"></div>
+    </div>
+    <script>
+        async function analyzeURL() {
+            const url = document.getElementById('urlInput').value;
+            if (!url) return alert('Please enter a URL');
+            
+            const response = await fetch('/api/analyze/url', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url})
+            });
+            const result = await response.json();
+            
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = 'result show ' + (result.is_phishing ? 'danger' : 'safe');
+            resultDiv.innerHTML = `
+                <h3>${result.is_phishing ? '⚠️ PHISHING DETECTED' : '✅ SAFE'}</h3>
+                <p>Confidence: ${Math.round(result.confidence_score * 100)}%</p>
+                <p>Risk Level: ${result.risk_level}</p>
+                <p>Method: ${result.detection_method}</p>
+            `;
+        }
+    </script>
+</body>
+</html>
