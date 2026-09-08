@@ -2,7 +2,13 @@
 
 ## Model Architecture
 
-Currently uses rule-based detection with machine learning framework ready for integration.
+URL and email analysis use hybrid scoring: deterministic detection rules are
+combined with a Random Forest probability. Web-content analysis is currently
+rule-based.
+
+The repository bundles a tiny deterministic baseline so the application is
+runnable without downloading a model. It is explicitly a demonstration model,
+not a performance claim or production artifact.
 
 ## Feature Engineering
 
@@ -28,7 +34,7 @@ Currently uses rule-based detection with machine learning framework ready for in
 
 ## Training Data
 
-For production ML training, you would need:
+For production ML training, you need:
 - Labeled phishing URLs
 - Labeled legitimate URLs
 - Phishing email samples
@@ -38,10 +44,12 @@ For production ML training, you would need:
 
 ## Model Training
 
-The ML classifier is ready for training with labeled data. Use `backend/train_model.py` for training:
+Use a versioned, legally obtained dataset with a time-based holdout split. Record
+dataset version, feature schema, threshold, and precision/recall by class for
+every model release. Do not report accuracy alone for this imbalanced problem.
 
 ```bash
-python backend/train_model.py --data-path ./data/ --output-path ./models/
+python backend/train_model.py --sample
 ```
 
 ## Evaluation Metrics
@@ -55,7 +63,6 @@ When models are trained, evaluate using:
 
 ## Limitations
 
-- Current implementation is rule-based
-- ML components require training data
+- Bundled ML baseline is not production-trained
 - Model performance depends on data quality
 - Regular retraining needed for effectiveness

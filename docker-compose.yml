@@ -8,5 +8,5 @@ services:
     volumes:
       - ./instance:/app/instance
     environment:
-      - FLASK_ENV=development
-      - SECRET_KEY=your-secret-key-here
+      - FLASK_HOST=0.0.0.0
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in your environment or .env file}

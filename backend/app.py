@@ -1,188 +1,128 @@
-"""
-Flask Web Application for Phishing Detection System
-"""
+"""HTTP API for defensive phishing analysis."""
+from __future__ import annotations
 
-from flask import Flask, render_template, request, jsonify
+import hashlib
+import json
+import logging
+import os
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-import os
-import sys
-import logging
-from datetime import datetime
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+try:  # Supports both `python backend/app.py` and package imports in tests/WSGI.
+    from .models.content_analyzer import ContentAnalyzer
+    from .models.email_analyzer import EmailAnalyzer
+    from .models.ml_classifier import MLClassifier
+    from .models.url_analyzer import URLAnalyzer
+except ImportError:  # pragma: no cover - direct-script compatibility
+    from models.content_analyzer import ContentAnalyzer
+    from models.email_analyzer import EmailAnalyzer
+    from models.ml_classifier import MLClassifier
+    from models.url_analyzer import URLAnalyzer
 
-from models.url_analyzer import URLAnalyzer
-from models.email_analyzer import EmailAnalyzer
-from models.content_analyzer import ContentAnalyzer
-
-app = Flask(__name__)
-CORS(app)
-
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///phishing_detection.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-db = SQLAlchemy(app)
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
+MAX_INPUT_LENGTH = 20_000
+load_dotenv()
 
-url_analyzer = URLAnalyzer()
-email_analyzer = EmailAnalyzer()
-content_analyzer = ContentAnalyzer()
 
-class DetectionResult(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    analysis_type = db.Column(db.String(50), nullable=False)
-    input_data = db.Column(db.Text, nullable=False)
-    is_phishing = db.Column(db.Boolean, nullable=False)
-    confidence_score = db.Column(db.Float, nullable=False)
-    risk_level = db.Column(db.String(20), nullable=False)
-    detection_method = db.Column(db.String(50), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    details = db.Column(db.Text)
+def create_app(test_config: dict | None = None) -> Flask:
+    app = Flask(__name__, template_folder=str(Path(__file__).with_name("templates")))
+    app.config.from_mapping(SECRET_KEY=os.getenv("SECRET_KEY") or None, SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", "sqlite:///phishing_detection.db"), SQLALCHEMY_TRACK_MODIFICATIONS=False, STORE_ANALYSIS_CONTENT=os.getenv("STORE_ANALYSIS_CONTENT", "false").lower() == "true")
+    if test_config:
+        app.config.update(test_config)
+    if not app.config["SECRET_KEY"] and not app.config.get("TESTING"):
+        raise RuntimeError("SECRET_KEY must be set outside test environments")
+    CORS(app, resources={r"/api/*": {"origins": os.getenv("CORS_ORIGINS", "http://localhost:5000").split(",")}})
+    db = SQLAlchemy(app)
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'analysis_type': self.analysis_type,
-            'input_data': self.input_data,
-            'is_phishing': self.is_phishing,
-            'confidence_score': self.confidence_score,
-            'risk_level': self.risk_level,
-            'detection_method': self.detection_method,
-            'timestamp': self.timestamp.isoformat(),
-            'details': self.details
-        }
+    class DetectionResult(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        analysis_type = db.Column(db.String(20), nullable=False)
+        input_data = db.Column(db.Text, nullable=False)
+        is_phishing = db.Column(db.Boolean, nullable=False)
+        confidence_score = db.Column(db.Float, nullable=False)
+        risk_level = db.Column(db.String(10), nullable=False)
+        detection_method = db.Column(db.String(30), nullable=False)
+        timestamp = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+        details = db.Column(db.Text, nullable=False)
 
-with app.app_context():
-    db.create_all()
+        def to_dict(self) -> dict:
+            return {"id": self.id, "analysis_type": self.analysis_type, "input_data": self.input_data, "is_phishing": self.is_phishing, "confidence_score": self.confidence_score, "risk_level": self.risk_level, "detection_method": self.detection_method, "timestamp": self.timestamp.isoformat(), "details": json.loads(self.details)}
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+    url_analyzer, email_analyzer, content_analyzer, ml_classifier = URLAnalyzer(), EmailAnalyzer(), ContentAnalyzer(), MLClassifier()
 
-@app.route('/api/analyze/url', methods=['POST'])
-def analyze_url():
-    try:
-        data = request.get_json()
-        url = data.get('url')
-        
-        if not url:
-            return jsonify({'error': 'URL is required'}), 400
-        
-        result = url_analyzer.analyze(url)
-        
-        detection = DetectionResult(
-            analysis_type='url',
-            input_data=url,
-            is_phishing=result['is_phishing'],
-            confidence_score=result['confidence_score'],
-            risk_level='high' if result['confidence_score'] > 0.7 else 'medium' if result['confidence_score'] > 0.4 else 'low',
-            detection_method='rules',
-            details=str(result['details'])
-        )
-        db.session.add(detection)
+    def risk_level(score: float) -> str:
+        return "high" if score >= 0.70 else "medium" if score >= 0.40 else "low"
+
+    def validate(field: str) -> str:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field].strip():
+            raise ValueError(f"'{field}' must be a non-empty string")
+        if len(payload[field]) > MAX_INPUT_LENGTH:
+            raise ValueError(f"'{field}' must not exceed {MAX_INPUT_LENGTH} characters")
+        return payload[field].strip()
+
+    def hybrid(rule_result: dict, ml_result: dict | None = None) -> dict:
+        if not ml_result:
+            return rule_result
+        score = round(0.60 * rule_result["confidence_score"] + 0.40 * ml_result["confidence_score"], 4)
+        return {"is_phishing": score >= 0.50, "confidence_score": score, "details": {**rule_result["details"], "ml": ml_result["details"], "rule_score": rule_result["confidence_score"], "ml_score": ml_result["confidence_score"]}}
+
+    def record(kind: str, value: str, result: dict, method: str) -> None:
+        stored = value[:500] if app.config["STORE_ANALYSIS_CONTENT"] else f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
+        db.session.add(DetectionResult(analysis_type=kind, input_data=stored, is_phishing=result["is_phishing"], confidence_score=result["confidence_score"], risk_level=risk_level(result["confidence_score"]), detection_method=method, details=json.dumps(result["details"])))
         db.session.commit()
-        
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/analyze/email', methods=['POST'])
-def analyze_email():
-    try:
-        data = request.get_json()
-        email_content = data.get('email_content')
-        
-        if not email_content:
-            return jsonify({'error': 'Email content is required'}), 400
-        
-        result = email_analyzer.analyze(email_content)
-        
-        detection = DetectionResult(
-            analysis_type='email',
-            input_data=email_content[:500],
-            is_phishing=result['is_phishing'],
-            confidence_score=result['confidence_score'],
-            risk_level='high' if result['confidence_score'] > 0.7 else 'medium' if result['confidence_score'] > 0.4 else 'low',
-            detection_method='rules',
-            details=str(result['details'])
-        )
-        db.session.add(detection)
-        db.session.commit()
-        
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+    def analyze(kind: str, field: str, rule: Callable[[str], dict], ml: Callable[[str], dict] | None = None):
+        try:
+            value = validate(field)
+            result = hybrid(rule(value), ml(value) if ml else None)
+            method = "hybrid" if ml else "rules"
+            record(kind, value, result, method)
+            return jsonify({**result, "risk_level": risk_level(result["confidence_score"]), "detection_method": method})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception:
+            db.session.rollback()
+            logger.exception("Analysis failed for %s", kind)
+            return jsonify({"error": "Analysis could not be completed"}), 500
 
-@app.route('/api/analyze/content', methods=['POST'])
-def analyze_content():
-    try:
-        data = request.get_json()
-        content = data.get('content')
-        
-        if not content:
-            return jsonify({'error': 'Content is required'}), 400
-        
-        result = content_analyzer.analyze(content)
-        
-        detection = DetectionResult(
-            analysis_type='content',
-            input_data=content[:500],
-            is_phishing=result['is_phishing'],
-            confidence_score=result['confidence_score'],
-            risk_level='high' if result['confidence_score'] > 0.7 else 'medium' if result['confidence_score'] > 0.4 else 'low',
-            detection_method='rules',
-            details=str(result['details'])
-        )
-        db.session.add(detection)
-        db.session.commit()
-        
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+    @app.get("/")
+    def index(): return render_template("index.html")
 
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
-    try:
+    @app.post("/api/analyze/url")
+    def analyze_url(): return analyze("url", "url", url_analyzer.analyze, ml_classifier.predict_url)
+
+    @app.post("/api/analyze/email")
+    def analyze_email(): return analyze("email", "email_content", email_analyzer.analyze, ml_classifier.predict_email)
+
+    @app.post("/api/analyze/content")
+    def analyze_content(): return analyze("content", "content", content_analyzer.analyze)
+
+    @app.get("/api/stats")
+    def stats():
         total = DetectionResult.query.count()
         phishing = DetectionResult.query.filter_by(is_phishing=True).count()
-        
-        return jsonify({
-            'total_detections': total,
-            'phishing_count': phishing,
-            'legitimate_count': total - phishing,
-            'detection_rate': round((phishing / total * 100) if total > 0 else 0, 2)
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"total_detections": total, "phishing_count": phishing, "legitimate_count": total - phishing, "detection_rate": round(100 * phishing / total, 2) if total else 0})
 
-@app.route('/api/reports', methods=['GET'])
-def get_reports():
-    try:
-        limit = request.args.get('limit', 10, type=int)
-        offset = request.args.get('offset', 0, type=int)
-        
-        results = DetectionResult.query.order_by(
-            DetectionResult.timestamp.desc()
-        ).limit(limit).offset(offset).all()
-        
-        reports = [result.to_dict() for result in results]
-        
-        return jsonify({
-            'reports': reports,
-            'total': DetectionResult.query.count()
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    @app.get("/api/reports")
+    def reports():
+        limit = min(max(request.args.get("limit", 10, type=int), 1), 100)
+        rows = DetectionResult.query.order_by(DetectionResult.timestamp.desc()).limit(limit).all()
+        return jsonify({"reports": [row.to_dict() for row in rows], "total": DetectionResult.query.count()})
 
-if __name__ == '__main__':
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    host = os.environ.get('FLASK_HOST', '127.0.0.1')
-    port = int(os.environ.get('FLASK_PORT', 5000))
-    app.run(debug=debug_mode, host=host, port=port)
+    with app.app_context():
+        db.create_all()
+    return app
+
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true", host=os.getenv("FLASK_HOST", "127.0.0.1"), port=int(os.getenv("FLASK_PORT", "5000")))

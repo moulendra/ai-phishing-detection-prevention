@@ -5,6 +5,11 @@
 
 An AI-powered phishing detection system combining rule-based analysis and machine learning to identify malicious URLs, emails, and web content.
 
+> **Scope:** this is a defensive educational project, not a replacement for a
+> managed anti-phishing service. The bundled ML model is a reproducible
+> demonstration baseline; it must be retrained and evaluated on representative
+> data before making production security decisions.
+
 ## Features
 
 - **URL Analysis**: Detects phishing URLs using rule-based pattern matching
@@ -42,6 +47,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Configure local secrets (required outside automated tests)
+cp .env.example .env
+# Set SECRET_KEY in .env, then export it for your shell/runtime.
 ```
 
 ## Usage
@@ -118,11 +127,21 @@ The system uses a hybrid approach:
 
 This system is designed for defensive cybersecurity purposes. Key security features:
 
-- Input validation and sanitization
+- JSON type and size validation
 - No direct URL fetching (SSRF protection)
-- Safe error handling
+- Generic client-facing error handling with server-side logs
 - Database security
-- Logging without sensitive data
+- Submitted inputs are stored as SHA-256 hashes by default; set
+  `STORE_ANALYSIS_CONTENT=true` only when retention is explicitly required
+
+## Quality checks
+
+```bash
+pytest -q
+ruff check backend/app.py backend/models/ml_classifier.py backend/train_model.py tests
+```
+
+GitHub Actions runs these checks on Python 3.10–3.12, plus a Bandit security scan.
 
 ## Limitations
 

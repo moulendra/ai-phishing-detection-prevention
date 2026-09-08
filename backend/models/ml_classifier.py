@@ -1,145 +1,70 @@
-"""
-ML Classifier - Machine learning based phishing detection
-"""
+"""Reproducible baseline ML models used by the hybrid detection service.
 
-import numpy as np
-import re
-from typing import Dict
+Bundled samples make the app runnable for demonstrations only. They are not a
+production-trained model; deployers should load a versioned model trained on
+representative data.
+"""
+from __future__ import annotations
+
 import logging
+import os
+from pathlib import Path
+from typing import Any
+
+import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
+
 class MLClassifier:
-    """Machine learning classifier for phishing detection"""
-    
-    def __init__(self):
-        self.model_path = 'backend/models/phishing_model.pkl'
-        self.url_model = None
-        self.email_vectorizer = None
-        self.scaler = None
-        self._initialize_models()
-    
-    def _initialize_models(self):
-        """Initialize ML models with sample data"""
-        try:
-            if os.path.exists(self.model_path):
-                logger.info("Loading existing ML models...")
-                models = joblib.load(self.model_path)
-                self.url_model = models.get('url_model')
-                logger.info("Models loaded successfully")
-            else:
-                logger.info("No existing models, initializing...")
-                self._train_basic_models()
-        except Exception as e:
-            logger.error(f"Error loading models: {str(e)}")
-            self._train_basic_models()
-    
-    def _train_basic_models(self):
-        """Train basic models with sample data"""
-        # Sample training data
-        url_samples = [
-            ("https://www.google.com", 0),
-            ("http://google-secure-login.com", 1),
-            ("https://www.facebook.com", 0),
-            ("http://apple-id-verify.xyz", 1),
-        ]
-        
-        emails = [
-            ("Thank you for your purchase. Order confirmed.", 0),
-            ("URGENT: Your account will be closed unless you verify immediately.", 1),
-        ]
-        
-        # Extract features for URLs
-        url_features = []
-        url_labels = []
-        for url, label in url_samples:
-            features = self._extract_url_features(url)
-            url_features.append(features)
-            url_labels.append(label)
-        
-        # Train URL model
-        self.url_model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
-        self.scaler = StandardScaler()
-        url_features_scaled = self.scaler.fit_transform(url_features)
-        self.url_model.fit(url_features_scaled, url_labels)
-        
-        # Train email model
-        self.email_vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
-        email_texts = [text for text, _ in emails]
-        email_labels = [label for _, label in emails]
-        email_features = self.email_vectorizer.fit_transform(email_texts)
-        self.email_model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
-        self.email_model.fit(email_features, email_labels)
-        
-        logger.info("Basic model training complete")
-    
-    def _extract_url_features(self, url: str):
-        """Extract features from URL"""
-        features = [
-            len(url),
-            url.count('.'),
-            url.count('-'),
-            url.count('_'),
-            url.count('='),
-            1 if url.startswith('https') else 0,
-            1 if any(tld in url for tld in ['.xyz', '.top', '.tk']) else 0,
-            1 if 'login' in url.lower() else 0,
-            1 if 'verify' in url.lower() else 0,
-        ]
-        return features
-    
-    def predict_url(self, url: str) -> Dict:
-        """Predict if a URL is phishing"""
-        result = {
-            'is_phishing': False,
-            'confidence_score': 0.0,
-            'details': {'method': 'ml_random_forest', 'model_confidence': 0.0}
-        }
-        
-        if not self.url_model:
-            return result
-        
-        try:
-            features = self._extract_url_features(url)
-            features_scaled = self.scaler.transform([features])
-            prediction = self.url_model.predict(features_scaled)[0]
-            probabilities = self.url_model.predict_proba(features_scaled)[0]
-            confidence = probabilities[1] if len(probabilities) > 1 else 0.0
-            
-            result['is_phishing'] = bool(prediction)
-            result['confidence_score'] = float(confidence)
-            result['details']['model_confidence'] = float(confidence)
-            
-        except Exception as e:
-            logger.error(f"Error in URL prediction: {str(e)}")
-        
-        return result
-    
-    def predict_email(self, email_content: str) -> Dict:
-        """Predict if an email is phishing"""
-        result = {
-            'is_phishing': False,
-            'confidence_score': 0.0,
-            'details': {'method': 'ml_random_forest', 'model_confidence': 0.0}
-        }
-        
-        if not self.email_model or not self.email_vectorizer:
-            return result
-        
-        try:
-            features = self.email_vectorizer.transform([email_content])
-            prediction = self.email_model.predict(features)[0]
-            probabilities = self.email_model.predict_proba(features)[0]
-            confidence = probabilities[1] if len(probabilities) > 1 else 0.0
-            
-            result['is_phishing'] = bool(prediction)
-            result['confidence_score'] = float(confidence)
-            result['details']['model_confidence'] = float(confidence)
-            
-        except Exception as e:
-            logger.error(f"Error in email prediction: {str(e)}")
-        
-        return result
+    """Provides URL and email baseline probabilities for hybrid scoring."""
+
+    def __init__(self, model_path: str | None = None) -> None:
+        self.model_path = Path(model_path or os.getenv("MODEL_PATH", "backend/models/phishing_model.joblib"))
+        self.url_model = self.url_scaler = self.email_model = self.email_vectorizer = None
+        self.model_source = "bundled demonstration baseline"
+        self._load_or_train()
+
+    @staticmethod
+    def extract_url_features(url: str) -> list[float]:
+        value = url.lower()
+        return [len(value), value.count("."), value.count("-"), value.count("_"), value.count("="), float(value.startswith("https://")), float(any(tld in value for tld in (".xyz", ".top", ".tk", ".zip"))), float(any(word in value for word in ("login", "verify", "secure", "account")))]
+
+    def _load_or_train(self) -> None:
+        if self.model_path.exists():
+            try:
+                models: dict[str, Any] = joblib.load(self.model_path)
+                self.url_model, self.url_scaler = models["url_model"], models["url_scaler"]
+                self.email_model, self.email_vectorizer = models["email_model"], models["email_vectorizer"]
+                self.model_source = "local trained model"
+                return
+            except (OSError, KeyError, ValueError) as exc:
+                logger.warning("Could not load model %s: %s", self.model_path, exc)
+        self._train_demo_baseline()
+
+    def _train_demo_baseline(self) -> None:
+        urls = [("https://www.google.com", 0), ("https://docs.python.org", 0), ("https://github.com/openai", 0), ("http://verify-account-login.xyz", 1), ("http://secure-paypal-login.top", 1), ("http://apple-id-verify.tk", 1)]
+        emails = [("Your order has shipped. Thank you for shopping with us.", 0), ("Team meeting moved to 10 AM tomorrow.", 0), ("URGENT: verify your password now or your account will be closed.", 1), ("Security alert: confirm your login immediately to avoid suspension.", 1)]
+        self.url_scaler = StandardScaler().fit([self.extract_url_features(url) for url, _ in urls])
+        self.url_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        self.url_model.fit(self.url_scaler.transform([self.extract_url_features(url) for url, _ in urls]), [label for _, label in urls])
+        self.email_vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+        matrix = self.email_vectorizer.fit_transform([text for text, _ in emails])
+        self.email_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight="balanced")
+        self.email_model.fit(matrix, [label for _, label in emails])
+
+    @staticmethod
+    def _prediction(model: Any, features: Any) -> float:
+        classes = list(model.classes_)
+        return float(model.predict_proba(features)[0][classes.index(1)]) if 1 in classes else 0.0
+
+    def predict_url(self, url: str) -> dict[str, Any]:
+        probability = self._prediction(self.url_model, self.url_scaler.transform([self.extract_url_features(url)]))
+        return {"is_phishing": probability >= 0.5, "confidence_score": probability, "details": {"method": "random_forest", "model_source": self.model_source}}
+
+    def predict_email(self, content: str) -> dict[str, Any]:
+        probability = self._prediction(self.email_model, self.email_vectorizer.transform([content]))
+        return {"is_phishing": probability >= 0.5, "confidence_score": probability, "details": {"method": "random_forest", "model_source": self.model_source}}

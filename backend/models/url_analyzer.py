@@ -63,6 +63,7 @@ class URLAnalyzer:
             result['confidence_score'] = max(0, result['confidence_score'] - 0.1)
         
         result['confidence_score'] = min(result['confidence_score'], 1.0)
-        result['is_phishing'] = result['confidence_score'] > 0.5
+        # A score of 0.5 represents multiple independent high-risk signals.
+        result['is_phishing'] = result['confidence_score'] >= 0.5
         
         return result

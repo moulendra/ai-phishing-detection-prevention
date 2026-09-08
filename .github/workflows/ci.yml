@@ -2,34 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.8'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Run tests
-      run: |
-        python tests/test_basic.py
-    
-    - name: Security check
-      run: |
-        pip install bandit
-        bandit -r backend/ -f json -o bandit-report.json || true
-        # Fail only on high severity issues (debug mode and host binding are medium/controlled by env vars)
-        python -c "import json; report=json.load(open('bandit-report.json')); exit(1 if any(r['issue_severity']=='HIGH' for r in report['results']) else 0)"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - run: ruff check backend/app.py backend/models/ml_classifier.py backend/train_model.py tests
+      - run: pytest -q
+      - run: pip install bandit && bandit -r backend -ll
